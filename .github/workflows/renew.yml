@@ -1,90 +1,59 @@
-name: Host2Play 续期
+name: Katabump Auto Renew
 
 on:
   schedule:
-    - cron: '0 0,11,22 * * *'    # 触发点: 00:00, 11:00, 22:00
-    - cron: '30 5,16 * * *'      # 触发点: 05:30, 16:30
-  workflow_dispatch:
-
-permissions:
-  actions: write
-  contents: read
+  - cron: '0 2 */3 * *'  # 每天 UTC 0点 (北京时间 8点) 运行,根据服务到期时间自行修改
+  workflow_dispatch: # 允许手动触发
 
 jobs:
-  run-renew:
-    name: 执行脚本
+  Renew-Katabump:
     runs-on: ubuntu-latest
-
+    permissions:
+      actions: write  
+      contents: read
+    
     steps:
-      - name: 拉取仓库
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v6
+    - name: ⚙ 设置 Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
 
-      - name: 配置 Python 环境
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+    - name: 🛠️ 安装系统依赖和python依赖
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
+        pip install seleniumbase requests
+        seleniumbase install chromedriver
 
-      - name: 🛠️ 安装系统依赖和虚拟声卡
-        run: |
-          sudo apt-get update
-          # 安装虚拟显示器、视频流工具、虚拟声卡和字体
-          sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk ffmpeg unzip curl pulseaudio alsa-utils
-          
-          # 启动后台虚拟声卡，防止 Google 探测到无声卡硬件
-          pulseaudio --start --exit-idle-time=-1 || true
-          
-          wget -q -O /tmp/google-chrome-stable_current_amd64.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo dpkg -i /tmp/google-chrome-stable_current_amd64.deb || sudo apt-get install -f -y
+    - name: ⚙ 设置代理 (sing-box)
+      continue-on-error: true
+      env:
+        NODE_LINK: ${{ secrets.NODE_LINK }}
+      run: |
+        bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
 
-      - name: 🛠️ 安装 SeleniumBase 与 Python 依赖
-        run: |
-          python -m pip install --upgrade pip
-          pip install seleniumbase requests SpeechRecognition pydub
-          seleniumbase install chromedriver
-
-      - name: 修复 DNS
-        run: |
-          echo "[INFO] 停用 systemd-resolved，设置公共 DNS..."
-          sudo systemctl stop systemd-resolved 2>/dev/null || true
-          sudo systemctl disable systemd-resolved 2>/dev/null || true
-          sudo rm -f /etc/resolv.conf
-          echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
-          sleep 2
-
-      # ===== 核心：设置 sing-box 代理节点 =====
-      - name: ⚙ 设置代理 (sing-box)
-        continue-on-error: true
-        env:
-          NODE_LINK: ${{ secrets.NODE_LINK }}
-        run: |
-          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
-      # ========================================
-
-      - name: 🚀 运行 Host2Play 续期脚本
-        env:
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-          NODE_LINK: ${{ secrets.NODE_LINK }}
-        run: |
-          # 像 Katabump 一样，使用 xvfb-run 启动 1920x1080 虚拟桌面运行 SeleniumBase
-          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
-            python3 main.py
-
-      - name: 上传截图
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: screenshots-${{ github.run_number }}
-          path: output/screenshots/*.png
-          retention-days: 7
-          if-no-files-found: ignore
-
-      - name: 清理历史运行记录
-        if: always()
-        uses: Mattraks/delete-workflow-runs@v2
-        with:
-          token: ${{ github.token }}
-          repository: ${{ github.repository }}
-          delete_workflow_pattern: ${{ github.workflow }}
-          retain_days: 0
-          keep_minimum_runs: 2
+    - name: 🚀 运行续期脚本
+      env:
+        KATABUMP_EMAIL: ${{ secrets.KATABUMP_EMAIL }}
+        KATABUMP_PASSWORD: ${{ secrets.KATABUMP_PASSWORD }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      run: |
+        xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" \
+          python3 app.py
+        
+    - name: 🧹 清理旧的工作流运行记录
+      if: always()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+        count=0
+        for run_id in $runs; do
+          count=$((count + 1))
+          if [ $count -gt 1 ]; then
+            echo "删除运行记录: $run_id"
+            gh run delete $run_id || true
+          fi
+        done
